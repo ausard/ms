@@ -1,0 +1,186 @@
+version: '3'
+
+services:
+  keycloak:
+    image: jboss/keycloak
+    container_name: 'keycloak'
+    ports:
+      - '8080:8080'
+      - '9990:9990'
+    volumes:
+      - ./keycloak-data:/opt/jboss/keycloak/standalone/data
+    env_file:
+      - configs/keycloak.env
+    depends_on:
+      - keycloak-db
+
+  keycloak-db:
+    container_name: 'keycloak-db'
+    image: 'postgres:13'
+    ports:
+      - '5435:5432'
+    env_file:
+      - configs/keycloak.env
+    volumes:
+      - ./db/keycloak-init.sql:/docker-entrypoint-initdb.d/song-init.sql
+
+  zookeeper:
+    image: wurstmeister/zookeeper
+    container_name: zookeeper
+    ports:
+      - '2181:2181'
+
+  kafka:
+    image: wurstmeister/kafka
+    container_name: kafka
+    env_file:
+      - configs/kafka.env
+    depends_on:
+      - zookeeper
+
+  resource-processor:
+    image: 'resource-processor:latest'
+    container_name: 'resource-processor'
+    build:
+      context: resource-processor
+    ports:
+      - '8084:8080'
+    depends_on:
+      - resource-service
+      - kafka
+    env_file:
+      - configs/resource-processor.env
+
+  localstack:
+    container_name: 'localstack'
+    image: localstack/localstack:latest
+    ports:
+      - '4566:4566'
+    env_file:
+      - configs/resource-service.env
+    volumes:
+      - ./resource-service/init_s3.sh:/etc/localstack/init/ready.d/init_s3.sh
+
+  service-discovery:
+    build:
+      context: service-discovery
+    image: 'service-discovery:latest'
+    container_name: 'service-discovery'
+    ports:
+      - '8761:8761'
+    env_file:
+      - configs/service-discovery.env
+
+  gateway-service:
+    build:
+      context: gateway-service
+    image: 'gateway-service:latest'
+    container_name: 'gateway-service'
+    depends_on:
+      - service-discovery
+    ports:
+      - '8090:8080'
+    env_file:
+      - configs/gateway-service.env
+
+  song-service:
+    image: 'song-service:latest'
+    build:
+      context: song-service
+    container_name: 'song-service'
+    #    deploy:
+    #      mode: replicated
+    #      replicas: 2
+    ports:
+      #      - '8082-8083:8080'
+      - '8082:8080'
+    depends_on:
+      - song-db
+      - service-discovery
+      - gateway-service
+    env_file:
+      - configs/song-service.env
+
+  song-db:
+    image: 'postgres:13'
+    container_name: song-db
+    ports:
+      - '5432:5432'
+    env_file:
+      - configs/song-service.env
+    volumes:
+      - ./db/song-init.sql:/docker-entrypoint-initdb.d/song-init.sql
+
+  resource-service:
+    image: 'resource-service:latest'
+    container_name: 'resource-service'
+    build:
+      context: resource-service
+    ports:
+      - '8081:8080'
+    depends_on:
+      - resource-db
+      - song-service
+      - service-discovery
+      - gateway-service
+    env_file:
+      - configs/resource-service.env
+
+  resource-db:
+    image: 'postgres:13'
+    container_name: resource-db
+    ports:
+      - '5433:5432'
+    env_file:
+      - configs/resource-service.env
+    volumes:
+      - ./db/resource-init.sql:/docker-entrypoint-initdb.d/resource-init.sql
+
+  storage-service:
+    image: 'storage-service:latest'
+    build:
+      context: storage-service
+    container_name: 'storage-service'
+    ports:
+      - '8085:8080'
+    depends_on:
+      - storage-db
+      - service-discovery
+      - gateway-service
+    env_file:
+      - configs/storage-service.env
+
+  storage-db:
+    image: 'postgres:13'
+    container_name: storage-db
+    ports:
+      - '5434:5432'
+    env_file:
+      - configs/storage-service.env
+    volumes:
+      - ./db/storage-init.sql:/docker-entrypoint-initdb.d/storage-init.sql
+
+  prometheus:
+    image: prom/prometheus:v2.44.0
+    container_name: prometheus
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./prometheus:/etc/prometheus
+    command: --web.enable-lifecycle --config.file=/etc/prometheus/prometheus.yml
+
+  grafana:
+    image: grafana/grafana:9.5.2
+    container_name: grafana
+    ports:
+      - '3000:3000'
+    volumes:
+      - ./grafana/datasource.yml:/etc/grafana/provisioning/datasources/main.yaml
+      - ./grafana/dashboard.yml:/etc/grafana/provisioning/dashboards/main.yaml
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+
+  zipkin:
+    image: openzipkin/zipkin
+    container_name: zipkin
+    ports:
+      - '9411:9411'
